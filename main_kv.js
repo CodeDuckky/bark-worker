@@ -4,48 +4,44 @@ export default {
     }
 }
 
-// 这里决定是否允许新建设备
-const isAllowNewDevice = true
-// 是否允许查询设备数量
-const isAllowQueryNums = true
-// 根路径
-const rootPath = '/'
-// Basic Auth username:password
-const basicAuth = ''
-
 async function handleRequest(request, env, ctx) {
+    const allowNewDevice = env.ALLOW_NEW_DEVICE !== undefined ? (env.ALLOW_NEW_DEVICE === 'false' ? false : Boolean(env.ALLOW_NEW_DEVICE)) : true
+    const allowQueryNums = env.ALLOW_QUERY_NUMS !== undefined ? (env.ALLOW_QUERY_NUMS === 'false' ? false : Boolean(env.ALLOW_QUERY_NUMS)) : true
+    const rootPath = env.ROOT_PATH || '/'
+    const basicAuth = env.BASIC_AUTH
+
+    const db = new Database(env)
     const {searchParams, pathname} = new URL(request.url)
-    const handler = new Handler(env)
-    const realPathname = pathname.replace((new RegExp('^' + rootPath.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&"))), '/')
+    const handler = new Handler(db, { allowNewDevice, allowQueryNums })
+    const realPathname = pathname.replace((new RegExp('^' + rootPath.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'))), '/')
 
     switch (realPathname) {
-        case "/register": {
+        case '/register': {
             return handler.register(searchParams)
         }
-        case "/ping": {
+        case '/ping': {
             return handler.ping(searchParams)
         }
-        case "/healthz": {
+        case '/healthz': {
             return handler.healthz(searchParams)
         }
-        case "/info": {
-            if (!util.validateBasicAuth(request)) {
+        case '/info': {
+            if (!util.validateBasicAuth(request, basicAuth)) {
                 return new Response('Unauthorized', {
-                        status: 401,
-                        headers: {
-                            'content-type': 'text/plain',
-                            'WWW-Authenticate': 'Basic',
-                        }
-                    })
+                    status: 401,
+                    headers: {
+                        'content-type': 'text/plain',
+                        'WWW-Authenticate': 'Basic realm="Bark"',
+                    }
+                })
             }
-
             return handler.info(searchParams)
         }
         default: {
             const pathParts = realPathname.split('/')
 
             if (pathParts[1]) {
-                if (!util.validateBasicAuth(request)) {
+                if (!util.validateBasicAuth(request, basicAuth)) {
                     return new Response('Unauthorized', {
                         status: 401,
                         headers: {
@@ -61,11 +57,45 @@ async function handleRequest(request, env, ctx) {
                 try {
                     if (contentType && contentType.includes('application/json')) {
                         requestBody = await request.json()
+
+                        requestBody = Object.keys(requestBody).reduce((obj, key) => {
+                            obj[key.toLowerCase()] = requestBody[key]
+                            return obj
+                        }, {})
                     }else if (contentType && contentType.includes('application/x-www-form-urlencoded')){
                         const formData = await request.formData()
-                        formData.forEach((value, key) => {requestBody[key] = value})
+                        formData.forEach((value, key) => {requestBody[key.toLowerCase()] = value})
+
+                        try {
+                            if (requestBody.title) {
+                                requestBody.title = decodeURIComponent(requestBody.title.replaceAll('\\+', '%20'))
+                            }
+                            
+                            if (requestBody.subtitle) {
+                                requestBody.subtitle = decodeURIComponent(requestBody.subtitle.replaceAll('\\+', '%20'))
+                            }
+                            
+                            if (requestBody.body) {
+                                requestBody.body = decodeURIComponent(requestBody.body.replaceAll('\\+', '%20'))
+                            }
+
+                            if (requestBody.markdown) {
+                                requestBody.markdown = decodeURIComponent(requestBody.markdown.replaceAll('\\+', '%20'))
+                            }
+                        } catch (error) {
+                            return new Response(JSON.stringify({
+                                'code': 500,
+                                'message': `url path parse failed: ${error}`,
+                                'timestamp': util.getTimestamp(),
+                            }), {
+                                status: 500,
+                                headers: {
+                                    'content-type': 'application/json',
+                                }
+                            })
+                        }
                     }else{
-                        searchParams.forEach((value, key) => {requestBody[key] = value})
+                        searchParams.forEach((value, key) => {requestBody[key.toLowerCase()] = value})
 
                         if (pathParts.length === 3) {
                             requestBody.body = pathParts[2]
@@ -88,12 +118,42 @@ async function handleRequest(request, env, ctx) {
                                 }
                             })
                         }
+
+                        try {
+                            if (requestBody.title) {
+                                requestBody.title = decodeURIComponent(requestBody.title.replaceAll('\\+','%20'))
+                            }
+                            
+                            if (requestBody.subtitle) {
+                                requestBody.subtitle = decodeURIComponent(requestBody.subtitle.replaceAll('\\+','%20'))
+                            }
+                            
+                            if (requestBody.body) {
+                                requestBody.body = decodeURIComponent(requestBody.body.replaceAll('\\+','%20'))
+                            }
+
+                            if (requestBody.markdown) {
+                                requestBody.markdown = decodeURIComponent(requestBody.markdown.replaceAll('\\+','%20'))
+                            }
+                        } catch (error) {
+                            return new Response(JSON.stringify({
+                                'code': 500,
+                                'message': `url path parse failed: ${error}`,
+                                'timestamp': util.getTimestamp(),
+                            }), {
+                                status: 500,
+                                headers: {
+                                    'content-type': 'application/json',
+                                }
+                            })
+                        }
                     }
+
                     if (requestBody.device_keys && typeof requestBody.device_keys === 'string') {
                         if (requestBody.device_keys.startsWith('[') || requestBody.device_keys.endsWith(']')) {
                             requestBody.device_keys = JSON.parse(requestBody.device_keys)
                         } else {
-                            requestBody.device_keys = (decodeURIComponent(requestBody.device_keys).trim()).split(',').map(item => item.replace(/"/g, '').trim())
+                            requestBody.device_keys = (decodeURIComponent(requestBody.device_keys).trim()).split(',').map(item => item.replace(/['"]/g, '').trim())
                         }
 
                         if (typeof requestBody.device_keys === 'string') {
@@ -120,8 +180,8 @@ async function handleRequest(request, env, ctx) {
                         'data': await Promise.all(requestBody.device_keys.map(async (device_key) => {
                             if (!device_key) {
                                 return {
-                                    message: 'device key is empty',
                                     code: 400,
+                                    message: 'device key is empty',
                                     device_key: device_key,
                                 }
                             }
@@ -129,8 +189,8 @@ async function handleRequest(request, env, ctx) {
                             const response = await handler.push({...requestBody, device_key})
                             const responseBody = await response.json()
                             return {
-                                message: responseBody.message,
                                 code: response.status,
+                                message: responseBody.message,
                                 device_key: device_key,
                             }
                         })),
@@ -163,6 +223,15 @@ async function handleRequest(request, env, ctx) {
                 return handler.push(requestBody)
             }
 
+            if (realPathname === '/') {
+                return new Response('ok', {
+                    status: 200,
+                    headers: {
+                        'content-type': 'text/plain',
+                    }
+                })
+            }
+
             return new Response(JSON.stringify({
                 'code': 404,
                 'message': `Cannot ${request.method} ${realPathname}`,
@@ -177,18 +246,15 @@ async function handleRequest(request, env, ctx) {
     }
 }
 
-/**
- * Class Handler
- */
 class Handler {
-    constructor(env) {
-        this.version = "v2.1.6"
-        this.build = "2025-03-18 19:27:55"
-        this.arch = "js"
-        this.commit = "febf34e358426932516306cf8d53a1d0bd9bb0f9"
-
-        const db = new Database(env)
-
+    constructor(db, options) {
+        this.version = 'v2.3.4'
+        this.build = '2026-09-12 17:45:41'
+        this.arch = 'js'
+        this.commit = '3db0918856d5aca4d141300c84d5c7a9f851ba44'
+        this.allowNewDevice = options.allowNewDevice
+        this.allowQueryNums = options.allowQueryNums
+        
         this.register = async (parameters) => {
             const deviceToken = parameters.get('devicetoken')
             let key = parameters.get('key')
@@ -206,13 +272,26 @@ class Handler {
                 })
             }
 
-            if (!(key && await db.deviceTokenByKey(key))){
-                if (isAllowNewDevice) {
+            if (deviceToken.length > 160) {
+                return new Response(JSON.stringify({
+                    'code': 400,
+                    'message': 'device token is invalid',
+                    'timestamp': util.getTimestamp(),
+                }), {
+                    status: 400,
+                    headers: {
+                        'content-type': 'application/json',
+                    }
+                })
+            }
+
+            if (!(key && await db.deviceTokenByKey(key) != undefined)) {
+                if (this.allowNewDevice) {
                     key = await util.newShortUUID()
                 } else {
                     return new Response(JSON.stringify({
                         'code': 500,
-                        'message': "device registration failed: register disabled",
+                        'message': 'device registration failed: register disabled',
                     }), {
                         status: 500,
                         headers: {
@@ -255,7 +334,8 @@ class Handler {
         }
 
         this.healthz = async (parameters) => {
-            return new Response("ok", {
+            return new Response('ok', {
+                status: 200,
                 headers: {
                     'content-type': 'text/plain',
                 }
@@ -263,7 +343,7 @@ class Handler {
         }
 
         this.info = async (parameters) => {
-            if (isAllowQueryNums) {
+            if (this.allowQueryNums) {
                 this.devices = await db.countAll()
             }
 
@@ -284,7 +364,7 @@ class Handler {
         this.push = async (parameters) => {
             const deviceToken = await db.deviceTokenByKey(parameters.device_key)
 
-            if (!deviceToken) {
+            if (deviceToken === undefined) {
                 return new Response(JSON.stringify({
                     'code': 400,
                     'message': `failed to get device token: failed to get [${parameters.device_key}] device token from database`,
@@ -297,22 +377,22 @@ class Handler {
                 })
             }
 
-            let title = parameters.title || undefined
-            if (title) {
-                title = decodeURIComponent(title.replaceAll("\\+","%20"))
-            }
-            let subtitle = parameters.subtitle || undefined
-            if (subtitle) {
-                subtitle = decodeURIComponent(subtitle.replaceAll("\\+","%20"))
-            }
-            let body = parameters.body || undefined
-            if (body) {
-                body = decodeURIComponent(body.replaceAll("\\+","%20"))
+            if (!deviceToken) {
+                return new Response(JSON.stringify({
+                    'code': 400,
+                    'message': 'device token invalid',
+                    'timestamp': util.getTimestamp(),
+                }), {
+                    status: 400,
+                    headers: {
+                        'content-type': 'application/json',
+                    }
+                })
             }
 
-            if (!title && !subtitle && !body) {
-                body = 'Empty message'
-            }
+            const title = parameters.title || undefined
+            const subtitle = parameters.subtitle || undefined
+            const body = parameters.body || undefined
 
             let sound = parameters.sound || undefined
             if (sound) {
@@ -324,26 +404,34 @@ class Handler {
             }
 
             const group = parameters.group || undefined
-            
             const call = parameters.call || undefined
-            const isArchive = parameters.isArchive || undefined
+            const isArchive = parameters.isarchive || undefined
             const icon = parameters.icon || undefined
             const ciphertext = parameters.ciphertext || undefined
             const level = parameters.level || undefined
             const volume = parameters.volume || undefined
             const url = parameters.url || undefined
+            const image = parameters.image || undefined
             const copy = parameters.copy || undefined
-            const badge = parameters.badge || undefined
-            const autoCopy = parameters.autoCopy || undefined
+            const badge = parameters.badge?.toString()
+            const autoCopy = parameters.autocopy || undefined
             const action = parameters.action || undefined
-
+            const iv = parameters.iv || undefined
+            const id = parameters.id || undefined
+            const _delete = parameters.delete || undefined
+            const markdown = parameters.markdown || undefined
+            const ttl = parameters.ttl || undefined
+            
             // https://developer.apple.com/documentation/usernotifications/generating-a-remote-notification
             const aps = {
-                'aps': {
+                'aps': (_delete) ? {
+                    'content-available': 1,
+                    'mutable-content': 1,
+                } : {
                     'alert': {
                         'title': title,
                         'subtitle': subtitle,
-                        'body': body,
+                        'body': (!title && !subtitle && !body) ? 'Empty Message' : body,
                         'launch-image': undefined,
                         'title-loc-key': undefined,
                         'title-loc-args': undefined,
@@ -383,10 +471,25 @@ class Handler {
                 'badge': badge,
                 'autocopy': autoCopy,
                 'action': action,
+                'iv': iv,
+                'image': image,
+                'id': id,
+                'delete': _delete,
+                'markdown': markdown,
+                'ttl': ttl,
+            }
+
+            const headers = {
+                'apns-topic': undefined,
+                'apns-id': undefined,
+                'apns-collapse-id': id,
+                'apns-priority': undefined,
+                'apns-expiration': undefined,
+                'apns-push-type': (_delete) ? 'background' : 'alert',
             }
 
             const apns = new APNs(db)
-            const response = await apns.push(deviceToken, aps)
+            const response = await apns.push(deviceToken, headers, aps)
 
             if (response.status === 200) {
                 return new Response(JSON.stringify({
@@ -409,6 +512,10 @@ class Handler {
                     message = responseText
                 }
 
+                if ((response.status === 410) || ((response.status === 400) && (message.includes('BadDeviceToken')))) {
+                    await db.saveDeviceTokenByKey(parameters.device_key, '')
+                }
+
                 return new Response(JSON.stringify({
                     'code': response.status,
                     'message': `push failed: ${message}`,
@@ -424,9 +531,6 @@ class Handler {
     }
 }
 
-/**
- * Class APNs
- */
 class APNs {
     constructor(db) {
         const generateAuthToken = async () => {
@@ -463,38 +567,43 @@ class APNs {
 
         const getAuthToken = async () => {
             let authToken = await db.authorizationToken()
+
             if (authToken) {
                 return await authToken
             }
+
             authToken = await generateAuthToken()
-            await db.saveAuthorizationToken(authToken, util.getTimestamp())
+            await db.saveAuthorizationToken(authToken)
+
             return authToken
         }
 
-        this.push = async (deviceToken, aps) => {
+        this.push = async (deviceToken, headers, aps) => {
             const TOPIC = 'me.fin.bark'
             const APNS_HOST_NAME = 'api.push.apple.com'
             const AUTHENTICATION_TOKEN = await getAuthToken()
-            const pushData = JSON.stringify(aps)
 
             return await fetch(`https://${APNS_HOST_NAME}/3/device/${deviceToken}`, {
                 method: 'POST',
-                headers: {
-                    'apns-topic': TOPIC,
-                    'apns-expiration': util.getTimestamp() + 86400,
-                    'apns-push-type': 'alert',
+                headers: JSON.parse(JSON.stringify({
+                    'apns-topic': headers['apns-topic'] || TOPIC,
+                    'apns-id': headers['apns-id'] || undefined,
+                    'apns-collapse-id': headers['apns-collapse-id'] || undefined,
+                    'apns-priority': (headers['apns-priority'] > 0) ? headers['apns-priority'] : undefined,
+                    'apns-expiration': headers['apns-expiration'] || util.getTimestamp() + 86400,
+                    'apns-push-type': headers['apns-push-type'] || 'alert',
                     'authorization': `bearer ${AUTHENTICATION_TOKEN}`,
                     'content-type': 'application/json',
-                },
-                body: pushData,
+                })),
+                body: JSON.stringify(aps),
             })
         }
     }
 }
 
-/**
- * Class Database
- */
+let cachedAuthToken = {}
+let cachedDeviceToken = {}
+
 class Database {
     constructor(env) {
         // Make database private
@@ -506,31 +615,78 @@ class Database {
         }
 
         this.deviceTokenByKey = async (key) => {
-            const device_key = (key || '').replace(/[^a-zA-Z0-9]/g, '') || "_PLACE_HOLDER_"
+            const device_key = (key || '').replace(/[^a-zA-Z0-9]/g, '') || '_PLACE_HOLDER_'
+
+            if (device_key && cachedDeviceToken[device_key]) {
+                return cachedDeviceToken[device_key]
+            }
+
             const deviceToken = await kvStorage.get(device_key)
+
+            if (deviceToken) {
+                cachedDeviceToken[device_key] = deviceToken
+            }
+
             return deviceToken
         }
 
         this.saveDeviceTokenByKey = async (key, token) => {
-            const device_token = (token || '').replace(/[^a-z0-9]/g, '') || "_PLACE_HOLDER_"
+            const device_token = (token || '').replace(/[^a-z0-9]/g, '') || ''
             const deviceToken = await kvStorage.put(key, device_token)
+
+            if (device_token === '') {
+                delete cachedDeviceToken[key]
+            } else {
+                cachedDeviceToken[key] = device_token
+            }
+
+            return await deviceToken
+        }
+
+        this.deleteDeviceByKey = async (key) => {
+            const device_key = (key || '').replace(/[^a-zA-Z0-9]/g, '') || '_PLACE_HOLDER_'
+            const deviceToken = await kvStorage.delete(device_key)
+
+            delete cachedDeviceToken[device_key]
+
             return await deviceToken
         }
 
         this.saveAuthorizationToken = async (token) => {
-            const authToken = await kvStorage.put('_authToken_', token, { expirationTtl: 3000 })
+            const timestamp = util.getTimestamp()
+            const authToken = await kvStorage.put('_authToken_', JSON.stringify({
+                'token': token,
+                'time': timestamp,
+            }), { expirationTtl: 3000 })
+
+            cachedAuthToken = {
+                'token': token,
+                'timestamp': timestamp,
+            }
+
             return await authToken
         }
 
         this.authorizationToken = async () => {
-            return await kvStorage.get('_authToken_')
+            if (cachedAuthToken && (util.getTimestamp() - cachedAuthToken.timestamp < 3000)) {
+                return cachedAuthToken.token
+            }
+
+            const result = await kvStorage.get('_authToken_', 'json')
+
+            if (result && result.token && result.time) {
+                cachedAuthToken = {
+                    'token': result.token,
+                    'timestamp': result.time,
+                }
+                return result.token
+            }
+
+            return undefined
         }
     }
 }
 
-/**
- * Class Util
- */
 class Util {
     constructor() {
         this.getTimestamp = () => {
@@ -549,19 +705,30 @@ class Util {
 
         this.newShortUUID = async () => {
             const uuid = crypto.randomUUID()
-            const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(uuid))
+            const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(uuid))
             const hashArray = Array.from(new Uint8Array(hashBuffer))
 
-            return btoa(String.fromCharCode(...hashArray)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 22)
+            return btoa(String.fromCharCode(...hashArray)).replace(/[^a-zA-Z0-9]|[lIO01]/g, '').slice(0, 22)
         }
 
-        this.validateBasicAuth = (request) => {
-            if (basicAuth) {
-                const header = 'Basic ' + btoa(`${basicAuth}`)
-                const authHeader = request.headers.get('Authorization')
-                return header === authHeader
+        const constantTimeCompare = (a, b) => {
+            if (typeof a !== 'string' || typeof b !== 'string') { return false }
+            if (a.length !== b.length) { return false }
+            let result = 0
+            for (let i = 0; i < a.length; i++) {
+                result |= a.charCodeAt(i) ^ b.charCodeAt(i)
             }
+            return result === 0
+        }
 
+        this.validateBasicAuth = (request, basicAuth) => {
+            if (basicAuth) {
+                const authHeader = request.headers.get('Authorization')
+                if (typeof authHeader !== 'string' || !authHeader.startsWith('Basic ')) { return false }
+                const received = authHeader.slice(6) // Remove 'Basic ' prefix
+                const expected = btoa(`${basicAuth}`)
+                return constantTimeCompare(received, expected)
+            }
             return true
         }
     }

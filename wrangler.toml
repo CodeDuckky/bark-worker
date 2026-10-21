@@ -1,8 +1,0 @@
-name = "bark-worker"
-main = "main.js"
-compatibility_date = "2025-03-28"
-
-[[d1_databases]]
-binding = "database"
-database_name = "database_bark"
-database_id = "95aca0cf-0311-43ca-9fe3-11ac0d952cdb"
