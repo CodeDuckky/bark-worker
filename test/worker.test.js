@@ -20,8 +20,8 @@ it('registers a device against local D1', async () => {
   expect(result.data.device_key).toBeTruthy();
   expect(result.data.device_token).toBe('local-test-token');
 });
-it('returns the documented error for an unknown route', async () => {
+it('responds to the upstream root health probe', async () => {
   const response = await exports.default.fetch('https://worker.test/');
-  expect(response.status).toBe(404);
-  expect((await response.json()).code).toBe(404);
+  expect(response.status).toBe(200);
+  expect(await response.text()).toBe('ok');
 });

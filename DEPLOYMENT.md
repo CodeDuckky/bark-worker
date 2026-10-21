@@ -13,7 +13,9 @@ GitHub Actions runs the same checks on pushes and pull requests, without a
 second deployment job. Dependabot checks npm dependencies and GitHub Actions
 weekly and opens PRs. Updates require review and a merge; no auto-merge is set.
 
-Bark keeps the existing `database` D1 binding and database `database_bark`. Builds do not create databases, run schema migrations, or send push notifications. Tests use local isolated D1.
+Bark keeps the existing `database` D1 binding and database `database_bark`, configured in `wrangler.jsonc`. `keep_vars` preserves production environment variables; upstream example variables are not applied over existing settings. Builds do not create databases, run remote schema migrations, or send push notifications. Tests use local isolated D1 and mocked APNs.
+
+Upstream MCP migrations are retained for explicit administration. There is no `predeploy` migration hook: the Worker initializes the existing devices/authorization tables and the new MCP sessions table idempotently at runtime, while the Android inbox initializes its own table on demand. GitHub Actions checks feature branches before they are merged to `master`.
 
 ## Local checks
 

@@ -7,15 +7,34 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "npm run test:worker && npm run test:compat",
     "build": "wrangler deploy --dry-run",
     "check": "npm test && npm run build",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test:worker": "vitest run",
+    "test:compat": "node --test test/push-compatibility.test.js test/android-merge.node.js",
+    "cf-typegen": "wrangler types",
+    "db:migrate": "wrangler d1 migrations apply database --local",
+    "db:migrate:remote": "wrangler d1 migrations apply database --remote",
+    "preview": "wrangler dev"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.20.1",
     "vitest": "4.1.10",
     "wrangler": "4.118.0"
+  },
+  "description": "Bark Server on Cloudflare Worker",
+  "cloudflare": {
+    "label": "Bark Server",
+    "products": [
+      "Workers",
+      "D1"
+    ],
+    "categories": [],
+    "icon_urls": [],
+    "docs_url": "https://developers.cloudflare.com/workers/",
+    "preview_image_url": "https://github.com/cwxiaos/bark-worker/blob/master/doc/images/bark.jpeg",
+    "dash": true
   }
 }
