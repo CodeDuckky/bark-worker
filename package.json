@@ -13,7 +13,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test:worker": "vitest run",
-    "test:compat": "node --test test/push-compatibility.test.js",
+    "test:compat": "node --test test/push-compatibility.test.js test/android-merge.node.js",
     "cf-typegen": "wrangler types",
     "db:migrate": "wrangler d1 migrations apply database --local",
     "db:migrate:remote": "wrangler d1 migrations apply database --remote",
