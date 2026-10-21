@@ -515,9 +515,8 @@ class Handler {
             let response
             try { response = await apns.push(deviceToken, headers, aps) }
             catch (e) { if (androidSaved) return androidJSON({code:200,message:'success',android:true,apple:false}); throw e }
-            if (androidSaved) return androidJSON({code:200,message:'success',android:true,apple:response.status===200})
-
             if (response.status === 200) {
+                if (androidSaved) return androidJSON({code:200,message:'success',android:true,apple:true})
                 return new Response(JSON.stringify({
                     'code': 200,
                     'message': 'success',
@@ -541,6 +540,7 @@ class Handler {
                 if ((response.status === 410) || ((response.status === 400) && (message.includes('BadDeviceToken')))) {
                     await db.saveDeviceTokenByKey(parameters.device_key, '')
                 }
+                if (androidSaved) return androidJSON({code:200,message:'success',android:true,apple:false})
 
                 return new Response(JSON.stringify({
                     'code': response.status,
