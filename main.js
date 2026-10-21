@@ -1,5 +1,6 @@
 export default {
     async fetch(request, env, ctx) {
+        if (new URL(request.url).pathname === '/android/messages') return androidMessages(request, env)
         return await handleRequest(request, env, ctx)
     }
 }
@@ -282,9 +283,13 @@ class Handler {
         }
 
         this.push = async (parameters) => {
+            let androidSaved = false
+            try { androidSaved = await androidEnqueue(parameters, env) }
+            catch { return androidJSON({code:503,message:'Android inbox unavailable or unsupported payload'},503) }
             const deviceToken = await db.deviceTokenByKey(parameters.device_key)
 
             if (!deviceToken) {
+                if (androidSaved) return androidJSON({code:200,message:"success",android:true})
                 return new Response(JSON.stringify({
                     'code': 400,
                     'message': `failed to get device token: failed to get [${parameters.device_key}] device token from database`,
@@ -386,7 +391,10 @@ class Handler {
             }
 
             const apns = new APNs(db)
-            const response = await apns.push(deviceToken, aps)
+            let response
+            try { response = await apns.push(deviceToken, aps) }
+            catch (e) { if (androidSaved) return androidJSON({code:200,message:'success',android:true,apple:false}); throw e }
+            if (androidSaved) return androidJSON({code:200,message:'success',android:true,apple:response.status===200})
 
             if (response.status === 200) {
                 return new Response(JSON.stringify({
@@ -585,3 +593,37 @@ class Util {
 }
 
 const util = new Util()
+
+// Android inbox: separate receive credential, private payloads, bounded history.
+const androidConfig = {"keyHash": "90ce5ae87e3690d9d072218937c7add1d9261318dde2a788a1232ac3f65d51e4", "receiveHash": "3153b195cae91d27bf2fc7f219de53bcf7e865c3ca1724ef5b7874aff34a3d03"};
+const androidJSON = (value, status=200) => Response.json(value, {status,headers:{'Cache-Control':'no-store'}});
+async function androidHash(value) {return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)))).map(b=>b.toString(16).padStart(2,'0')).join('');}
+let androidSchemaReady;
+async function androidEnsureSchema(env) {
+ if(!androidSchemaReady) androidSchemaReady=(async()=>{
+  await env.database.prepare('CREATE TABLE IF NOT EXISTS android_messages (id INTEGER PRIMARY KEY AUTOINCREMENT,key_hash TEXT NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL)').run();
+  await env.database.prepare('CREATE INDEX IF NOT EXISTS android_messages_key_id ON android_messages(key_hash,id)').run();
+ })().catch(e=>{androidSchemaReady=undefined;throw e});
+ await androidSchemaReady;
+}
+async function androidMessages(request,env) {
+ if(request.method!=='GET') return androidJSON({error:'Method not allowed'},405);
+ const auth=request.headers.get('Authorization')||'';
+ if(!auth.startsWith('Bearer ') || await androidHash(auth.slice(7))!==androidConfig.receiveHash) return androidJSON({error:'Unauthorized'},401);
+ const after=Number(new URL(request.url).searchParams.get('after')||0);
+ if(!Number.isSafeInteger(after)||after<0) return androidJSON({error:'Invalid cursor'},400);
+ await androidEnsureSchema(env);
+ const {results}=await env.database.prepare('SELECT id,payload,created_at FROM android_messages WHERE key_hash=? AND id>? ORDER BY id ASC LIMIT 100').bind(androidConfig.keyHash,after).all();
+ return androidJSON({messages:results.map(r=>({...JSON.parse(r.payload),id:r.id,createdAt:r.created_at})),cursor:results.length?results[results.length-1].id:after});
+}
+async function androidEnqueue(parameters,env) {
+ if(await androidHash(String(parameters.device_key||''))!==androidConfig.keyHash) return false;
+ if(parameters.ciphertext) throw new Error('Android receiver does not support encrypted Bark messages');
+ const decode=v=>{try{return decodeURIComponent(String(v||'').replaceAll('\\+','%20'))}catch{return String(v||'')}};
+ const payload={title:decode(parameters.title),subtitle:decode(parameters.subtitle),body:decode(parameters.body)||(!parameters.title&&!parameters.subtitle?'Empty message':''),group:String(parameters.group||''),url:String(parameters.url||'')};
+ if(JSON.stringify(payload).length>65536) throw new Error('Android message exceeds 64 KiB');
+ await androidEnsureSchema(env);
+ await env.database.prepare('INSERT INTO android_messages (key_hash,payload,created_at) VALUES (?,?,?)').bind(androidConfig.keyHash,JSON.stringify(payload),Date.now()).run();
+ await env.database.prepare('DELETE FROM android_messages WHERE key_hash=? AND id NOT IN (SELECT id FROM android_messages WHERE key_hash=? ORDER BY id DESC LIMIT 1000)').bind(androidConfig.keyHash,androidConfig.keyHash).run();
+ return true;
+}
